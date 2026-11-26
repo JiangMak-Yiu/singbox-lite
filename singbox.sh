@@ -6058,6 +6058,8 @@ _apply_dns_config_locked() {
 NET_TUNE_CONF="/etc/sysctl.d/99-sb-net-tune.conf"
 NET_TUNE_EXTRA_CONF="/etc/sysctl.d/99-sb-net-tune-extra.conf"
 NET_TUNE_MODLOAD="/etc/modules-load.d/99-bbr.conf"
+# Alpine/OpenRC 用 /etc/modules 做开机模块加载，没有 modules-load.d
+NET_TUNE_MODFILE="${NET_TUNE_MODFILE:-/etc/modules}"
 
 _net_tune_status() {
     local cc avail qdisc
@@ -6079,20 +6081,61 @@ _net_tune_status() {
     echo ""
 }
 
+_is_container_env() {
+    [ -f /.dockerenv ] && return 0
+    [ -f /run/.containerenv ] && return 0
+    [ -f /run/container_type ] && return 0
+    tr '\0' '\n' < /proc/1/environ 2>/dev/null | grep -qx 'container=lxc' && return 0
+    return 1
+}
+
+# 逐条应用 sysctl：内核不支持的键跳过并提示，而不是一条不支持就整批失败。
+# PVE/LXC 里 /proc/sys/net/core/default_qdisc 常常不存在，整批 `sysctl -p` 会报错中断。
+_net_tune_apply_file() {
+    local f="$1" line key value applied=0 skipped=0
+    while IFS= read -r line; do
+        case "$line" in ''|\#*) continue ;; esac
+        key=${line%%=*}
+        value=${line#*=}
+        if sysctl -w "${key}=${value}" >/dev/null 2>&1; then
+            applied=$((applied + 1))
+        else
+            skipped=$((skipped + 1))
+            _warn "内核不支持 ${key}，已跳过（容器/裁剪内核常见）"
+        fi
+    done < "$f"
+    if [ "$applied" -eq 0 ]; then
+        _error "所有 sysctl 项都应用失败"
+        return 1
+    fi
+    [ "$skipped" -gt 0 ] && _info "已应用 ${applied} 条，跳过 ${skipped} 条不支持的项"
+    return 0
+}
+
 _net_tune_bbr() {
     local dev
     modprobe tcp_bbr 2>/dev/null
     modprobe sch_fq 2>/dev/null
     if ! sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null | tr ' ' '\n' | grep -qx bbr; then
-        _error "当前内核 $(uname -r) 没有 BBR 模块；本脚本不做内核替换。"
-        _info "需要 BBRplus/内核升级请看 ylx2016/Linux-NetSpeed（内核替换脚本，自行评估风险）"
+        _error "当前内核 $(uname -r) 没有 BBR 模块，无法在此开启。"
+        if _is_container_env; then
+            _info "这是容器（LXC/Docker/PVE），容器内不能 modprobe 内核模块。"
+            _info "请到宿主机执行：modprobe tcp_bbr && echo tcp_bbr >> /etc/modules，然后回到这里重试。"
+        else
+            _info "裸机会话可直接 modprobe tcp_bbr；内核根本没有该模块才需要换内核（ylx2016/Linux-NetSpeed，自行评估风险）。"
+        fi
         return 1
     fi
     mkdir -p "$(dirname "$NET_TUNE_CONF")" "$(dirname "$NET_TUNE_MODLOAD")" || return 1
     printf 'tcp_bbr\nsch_fq\n' > "$NET_TUNE_MODLOAD" || return 1
+    # Alpine/OpenRC 不读 modules-load.d，开机加载靠 /etc/modules
+    if [ -f "$NET_TUNE_MODFILE" ] && ! grep -qx 'tcp_bbr' "$NET_TUNE_MODFILE" 2>/dev/null; then
+        printf 'tcp_bbr\n' >> "$NET_TUNE_MODFILE"
+    fi
     printf 'net.core.default_qdisc=fq\nnet.ipv4.tcp_congestion_control=bbr\n' > "$NET_TUNE_CONF" || return 1
-    if ! sysctl -p "$NET_TUNE_CONF" >/dev/null 2>&1; then
-        _error "写入 $NET_TUNE_CONF 后应用失败；已保留文件，修复后执行 sysctl --system"
+    _net_tune_apply_file "$NET_TUNE_CONF" || return 1
+    if ! sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null | grep -qx bbr; then
+        _error "tcp_congestion_control 写入后仍不是 bbr，检查 $NET_TUNE_CONF"
         return 1
     fi
     # default_qdisc 只作用于新建的队列；已有接口当场换成 fq 才立即见效
@@ -6117,10 +6160,7 @@ EOF
         _error "写入 ${NET_TUNE_EXTRA_CONF} 失败"
         return 1
     fi
-    if ! sysctl -p "$NET_TUNE_EXTRA_CONF" >/dev/null 2>&1; then
-        _error "调优参数应用失败（部分内核不支持个别项），已保留文件"
-        return 1
-    fi
+    _net_tune_apply_file "$NET_TUNE_EXTRA_CONF" || return 1
     _success "TCP 调优已应用（持久化到 ${NET_TUNE_EXTRA_CONF}）"
 }
 
