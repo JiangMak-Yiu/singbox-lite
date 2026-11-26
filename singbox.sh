@@ -6052,6 +6052,107 @@ _apply_dns_config_locked() {
     _success "DNS 配置已保存并通过组合校验，备份文件：${backup_file}"
 }
 
+# --- 网络加速 (BBR / TCP 调优) ---
+# BBR 走内核自带模块，不做内核替换：现代内核（Ubuntu/Debian 5.x+、RHEL9 5.14+）都内置 tcp_bbr。
+NET_TUNE_CONF="/etc/sysctl.d/99-sb-net-tune.conf"
+NET_TUNE_EXTRA_CONF="/etc/sysctl.d/99-sb-net-tune-extra.conf"
+NET_TUNE_MODLOAD="/etc/modules-load.d/99-bbr.conf"
+
+_net_tune_status() {
+    local cc avail qdisc
+    cc=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)
+    avail=$(sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null)
+    qdisc=$(sysctl -n net.core.default_qdisc 2>/dev/null)
+    echo ""
+    echo -e "  内核:     ${CYAN}$(uname -r)${NC}"
+    echo -e "  拥塞控制: ${CYAN}${cc:-未知}${NC}"
+    echo -e "  可用算法: ${CYAN}${avail:-未知}${NC}"
+    echo -e "  队列规则: ${CYAN}${qdisc:-未知}${NC}"
+    if sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null | tr ' ' '\n' | grep -qx bbr; then
+        echo -e "  BBR:      ${GREEN}内核支持${NC}"
+    else
+        echo -e "  BBR:      ${RED}内核不支持（需升级内核）${NC}"
+    fi
+    [ -f "$NET_TUNE_CONF" ] && echo -e "  配置文件: ${CYAN}${NET_TUNE_CONF}${NC}"
+    [ -f "$NET_TUNE_EXTRA_CONF" ] && echo -e "  调优文件: ${CYAN}${NET_TUNE_EXTRA_CONF}${NC}"
+    echo ""
+}
+
+_net_tune_bbr() {
+    local dev
+    modprobe tcp_bbr 2>/dev/null
+    modprobe sch_fq 2>/dev/null
+    if ! sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null | tr ' ' '\n' | grep -qx bbr; then
+        _error "当前内核 $(uname -r) 没有 BBR 模块；本脚本不做内核替换。"
+        _info "需要 BBRplus/内核升级请看 ylx2016/Linux-NetSpeed（内核替换脚本，自行评估风险）"
+        return 1
+    fi
+    mkdir -p "$(dirname "$NET_TUNE_CONF")" "$(dirname "$NET_TUNE_MODLOAD")" || return 1
+    printf 'tcp_bbr\nsch_fq\n' > "$NET_TUNE_MODLOAD" || return 1
+    printf 'net.core.default_qdisc=fq\nnet.ipv4.tcp_congestion_control=bbr\n' > "$NET_TUNE_CONF" || return 1
+    if ! sysctl -p "$NET_TUNE_CONF" >/dev/null 2>&1; then
+        _error "写入 $NET_TUNE_CONF 后应用失败；已保留文件，修复后执行 sysctl --system"
+        return 1
+    fi
+    # default_qdisc 只作用于新建的队列；已有接口当场换成 fq 才立即见效
+    dev=$(ip route show default 2>/dev/null | awk '/default/{print $5; exit}')
+    [ -n "$dev" ] && tc qdisc replace dev "$dev" root fq 2>/dev/null
+    _success "BBR 已启用（持久化到 ${NET_TUNE_CONF}，重启后仍生效）"
+}
+
+_net_tune_extra() {
+    # 主流加速脚本通用参数；只覆盖本脚本自己的文件，不改 /etc/sysctl.conf
+    if ! cat > "$NET_TUNE_EXTRA_CONF" <<'EOF'
+net.ipv4.tcp_fastopen=3
+net.ipv4.tcp_slow_start_after_idle=0
+net.ipv4.tcp_mtu_probing=1
+net.ipv4.tcp_notsent_lowat=16384
+net.core.rmem_max=16777216
+net.core.wmem_max=16777216
+net.ipv4.tcp_rmem=4096 87380 16777216
+net.ipv4.tcp_wmem=4096 65536 16777216
+EOF
+    then
+        _error "写入 ${NET_TUNE_EXTRA_CONF} 失败"
+        return 1
+    fi
+    if ! sysctl -p "$NET_TUNE_EXTRA_CONF" >/dev/null 2>&1; then
+        _error "调优参数应用失败（部分内核不支持个别项），已保留文件"
+        return 1
+    fi
+    _success "TCP 调优已应用（持久化到 ${NET_TUNE_EXTRA_CONF}）"
+}
+
+_net_tune_menu() {
+    local choice
+    while true; do
+        clear
+        echo -e "${CYAN}"
+        echo '  ╔═══════════════════════════════════════╗'
+        echo '  ║      网络加速 (BBR / TCP 调优)        ║'
+        echo '  ╚═══════════════════════════════════════╝'
+        echo -e "${NC}"
+        _net_tune_status
+        echo -e "  ${GREEN}[1]${NC} 开启 BBR"
+        echo -e "  ${GREEN}[2]${NC} TCP 调优（可选，配合 BBR）"
+        echo -e "  ${GREEN}[3]${NC} 一键 BBR + 调优"
+        echo -e "  ${GREEN}[4]${NC} 刷新状态"
+        echo -e "  ${YELLOW}[0]${NC} 返回主菜单"
+        echo ""
+        read -r -p "  请选择 [0-4]: " choice
+        case "$choice" in
+            1) _net_tune_bbr ;;
+            2) _net_tune_extra ;;
+            3) _net_tune_bbr && _net_tune_extra ;;
+            4) ;;
+            0) return 0 ;;
+            *) _error "无效选项" ;;
+        esac
+        echo
+        read -n 1 -s -r -p "按任意键继续..."
+    done
+}
+
 _dns_config_menu() {
     local current_address current_strategy choice dns_address dns_strategy
 
@@ -8159,11 +8260,16 @@ _main_menu() {
         echo -e "    ${GREEN}[19]${NC} Xray 节点管理"
         echo ""
         
+        # 网络优化
+        echo -e "  ${CYAN}【网络优化】${NC}"
+        echo -e "    ${GREEN}[20]${NC} 网络加速 (BBR / TCP 调优)"
+        echo ""
+        
         echo -e "  ─────────────────────────────────────────────────"
         echo -e "    ${YELLOW}[0]${NC} 退出脚本"
         echo ""
         
-        read -p "  请输入选项 [0-19]: " choice
+        read -p "  请输入选项 [0-20]: " choice
  
         case $choice in
             1) _require_singbox && _show_add_node_menu ;;
@@ -8185,6 +8291,7 @@ _main_menu() {
             17) _uninstall ;; 
             18) _advanced_features ;;
             19) _xray_features ;;
+            20) _net_tune_menu ;;
             0) exit 0 ;;
             *) _error "无效输入，请重试。" ;;
         esac
