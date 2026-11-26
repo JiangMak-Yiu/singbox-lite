@@ -6223,11 +6223,54 @@ _speedtest_ensure() {
 }
 
 _speedtest_run() {
-    local script
+    local script shim
     script=$(_speedtest_ensure) || return 1
+    _speedtest_ensure_deps || return 1
+    shim=$(_speedtest_timeout_shim) || _warn "timeout 垫片生成失败，节点测试可能全部为空"
     _info "进入测速脚本菜单；它会自下载 Ookla/speedtest-go 等组件到 $(dirname "$script")/sp-github-i-abc"
     # 子脚本用相对路径存工作目录，必须切到它自己所在目录再跑
-    ( cd "$(dirname "$script")" && bash "$script" )
+    ( cd "$(dirname "$script")" && PATH="${shim:+${shim}:}${PATH}" bash "$script" )
+}
+
+_cmd_exists() { command -v "$1" >/dev/null 2>&1; }
+
+# i-abc 的脚本每条节点测试都用 `timeout --foreground 70 ...`，但 BusyBox 的 timeout
+# 不认 --foreground（Alpine/OpenWrt 默认就是 BusyBox），于是所有节点当场失败、结果表空白。
+# GNU timeout 在就直接跑；不在就生成一个只剥掉该参数、转交 BusyBox 的垫片。
+_speedtest_timeout_shim() {
+    timeout --foreground 1 true >/dev/null 2>&1 && return 0
+    local dir="${SINGBOX_DIR}/sp-shim"
+    mkdir -p "$dir" 2>/dev/null || return 1
+    cat > "$dir/timeout" <<'EOF'
+#!/bin/bash
+# 垫片：BusyBox timeout 不认 --foreground，剥掉后转给 busybox
+args=()
+for a in "$@"; do
+    [ "$a" = "--foreground" ] || args+=("$a")
+done
+exec /bin/busybox timeout "${args[@]}"
+EOF
+    chmod +x "$dir/timeout" 2>/dev/null || return 1
+    printf '%s\n' "$dir"
+}
+
+# i-abc 的脚本只在 RedHat/Debian/Arch 上自动装依赖，Alpine/OpenWrt 上会直接退出，
+# 所以这里先用本脚本自己的 _pkg_install 补齐它需要的 4 件套。
+_speedtest_ensure_deps() {
+    local p missing=()
+    for p in tar curl iperf3 bc; do
+        _cmd_exists "$p" || missing+=("$p")
+    done
+    [ "${#missing[@]}" -eq 0 ] && return 0
+    _info "测速脚本还需要 ${missing[*]}，正在安装..."
+    _pkg_install "${missing[@]}" || {
+        _warn "自动安装失败；Alpine/OpenWrt 请手动执行：apk add ${missing[*]}"
+        return 1
+    }
+    for p in "${missing[@]}"; do
+        _cmd_exists "$p" || { _error "安装后仍缺少 ${p}"; return 1; }
+    done
+    _success "依赖已就绪：${missing[*]}"
 }
 
 _speedtest_update() {

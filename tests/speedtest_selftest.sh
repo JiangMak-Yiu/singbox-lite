@@ -50,4 +50,32 @@ _speedtest_clean; rc=$?
 [ -d "$SINGBOX_DIR/sp-github-i-abc" ] && { echo "FAIL: 临时目录没删掉"; fail=1; }
 [ -f "$SINGBOX_DIR/keep.txt" ] || { echo "FAIL: 清理误删了别的文件"; fail=1; }
 
-[ "$fail" -eq 0 ] && echo "PASS: 一键测速模块 5 项自检通过" || exit 1
+# 6) 依赖补齐：缺 bc 时调用 _pkg_install，齐了就不动包管理器
+PKG_CALLED=""
+_pkg_install() { PKG_CALLED="$*"; FAKE_MISSING_BC=0; return 0; }
+_cmd_exists() { case "$1" in bc) [ "${FAKE_MISSING_BC:-0}" = "1" ] && return 1 ;; esac; return 0; }
+FAKE_MISSING_BC=1
+_speedtest_ensure_deps; rc=$?
+[ "$rc" -eq 0 ] || { echo "FAIL: 缺 bc 时补齐后应返回 0，实际 $rc"; fail=1; }
+[ "$PKG_CALLED" = "bc" ] || { echo "FAIL: 应只请求安装 bc，实际 '$PKG_CALLED'"; fail=1; }
+FAKE_MISSING_BC=0; PKG_CALLED=""
+_speedtest_ensure_deps; rc=$?
+[ "$rc" -eq 0 ] && [ -z "$PKG_CALLED" ] || { echo "FAIL: 依赖齐全时不该动包管理器"; fail=1; }
+# 装完仍缺 -> 报错退出
+_cmd_exists() { return 1; }
+_speedtest_ensure_deps >/dev/null; rc=$?
+[ "$rc" -eq 1 ] || { echo "FAIL: 装完仍缺依赖时应返回 1，实际 $rc"; fail=1; }
+
+# 7) timeout 垫片：GNU timeout 在就不改 PATH；BusyBox 式 timeout 就生成剥参垫片
+timeout() { [ "$1" = "--foreground" ] && return 1; return 0; }   # 模拟 BusyBox 的 timeout
+out=$(_speedtest_timeout_shim); rc=$?
+[ "$rc" -eq 0 ] && [ -x "$out/timeout" ] || { echo "FAIL: 应生成可执行的 timeout 垫片，实际 '$out' rc=$rc"; fail=1; }
+if [ -x /bin/busybox ]; then
+    # 剥掉 --foreground 后应正常执行 true（不被 busybox 拒参）
+    "$out/timeout" --foreground 5 true || { echo "FAIL: 垫片没能剥掉 --foreground"; fail=1; }
+fi
+unset -f timeout
+out=$(_speedtest_timeout_shim); rc=$?
+[ "$rc" -eq 0 ] && [ -z "$out" ] || { echo "FAIL: GNU timeout 在时不该生成垫片，实际 '$out'"; fail=1; }
+
+[ "$fail" -eq 0 ] && echo "PASS: 一键测速模块 10 项自检通过" || exit 1
