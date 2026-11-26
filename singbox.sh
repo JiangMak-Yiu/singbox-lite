@@ -6153,6 +6153,100 @@ _net_tune_menu() {
     done
 }
 
+# --- 一键测速 ---
+# 引擎外挂 i-abc/Speedtest（GPL-3.0，Ookla + speedtest-go + librespeed + 三网节点表，819★）：
+# 只下载它的 bash 脚本按需运行，不内联几百行的测速引擎，不动内核/系统配置。
+SPEEDTEST_SOURCE_URL="https://raw.githubusercontent.com/i-abc/Speedtest/main/speedtest.sh"
+
+_speedtest_path() {
+    if [ -f "${SCRIPT_DIR}/speedtest.sh" ]; then
+        printf '%s\n' "${SCRIPT_DIR}/speedtest.sh"
+    else
+        printf '%s\n' "${SINGBOX_DIR}/speedtest.sh"
+    fi
+}
+
+_speedtest_ensure() {
+    local script
+    script=$(_speedtest_path)
+    if [ -f "$script" ] && bash -n "$script" 2>/dev/null; then
+        printf '%s\n' "$script"
+        return 0
+    fi
+    _info "未检测到测速脚本，正在下载（首次约 40KB）..."
+    if ! _download_bash_script_atomic "$SPEEDTEST_SOURCE_URL" "$script" "speedtest.sh"; then
+        _error "测速脚本下载失败：请确认本机能访问 raw.githubusercontent.com"
+        return 1
+    fi
+    printf '%s\n' "$script"
+}
+
+_speedtest_run() {
+    local script
+    script=$(_speedtest_ensure) || return 1
+    _info "进入测速脚本菜单；它会自下载 Ookla/speedtest-go 等组件到 $(dirname "$script")/sp-github-i-abc"
+    # 子脚本用相对路径存工作目录，必须切到它自己所在目录再跑
+    ( cd "$(dirname "$script")" && bash "$script" )
+}
+
+_speedtest_update() {
+    local script
+    script=$(_speedtest_path)
+    _info "正在更新测速脚本..."
+    if ! _download_bash_script_atomic "$SPEEDTEST_SOURCE_URL" "$script" "speedtest.sh"; then
+        _error "更新失败；原有测速脚本未被改动"
+        return 1
+    fi
+    _success "测速脚本已更新：${script}"
+}
+
+_speedtest_clean() {
+    local dir
+    dir="$(dirname "$(_speedtest_path)")/sp-github-i-abc"
+    if [ ! -d "$dir" ]; then
+        _info "没有测速临时文件：${dir}"
+        return 0
+    fi
+    rm -rf "$dir" || return 1
+    _success "已清理测速临时文件：${dir}"
+}
+
+_speedtest_menu() {
+    local choice script
+    while true; do
+        script=$(_speedtest_path)
+        clear
+        echo -e "${CYAN}"
+        echo '  ╔═══════════════════════════════════════╗'
+        echo '  ║           一键测速 (Speedtest)         ║'
+        echo '  ╚═══════════════════════════════════════╝'
+        echo -e "${NC}"
+        echo ""
+        if [ -f "$script" ]; then
+            echo -e "  测速脚本: ${GREEN}${script}${NC}"
+        else
+            echo -e "  测速脚本: ${YELLOW}未下载（选 [1] 时自动获取）${NC}"
+        fi
+        echo -e "  临时目录: ${CYAN}$(dirname "$script")/sp-github-i-abc${NC}"
+        echo ""
+        echo -e "  ${GREEN}[1]${NC} 开始测速（三网 / 国际 / 流媒体解锁，进入其菜单）"
+        echo -e "  ${GREEN}[2]${NC} 更新测速脚本"
+        echo -e "  ${GREEN}[3]${NC} 清理测速临时文件"
+        echo -e "  ${YELLOW}[0]${NC} 返回主菜单"
+        echo ""
+        read -r -p "  请选择 [0-3]: " choice
+        case "$choice" in
+            1) _speedtest_run ;;
+            2) _speedtest_update ;;
+            3) _speedtest_clean ;;
+            0) return 0 ;;
+            *) _error "无效选项" ;;
+        esac
+        echo
+        read -n 1 -s -r -p "按任意键继续..."
+    done
+}
+
 _dns_config_menu() {
     local current_address current_strategy choice dns_address dns_strategy
 
@@ -7531,13 +7625,25 @@ _modify_node() {
 }
 
 # --- 更新管理脚本 ---
+# 下载脚本：wget 打头，curl 兜底。有的机器 wget 访问 raw.githubusercontent.com 会挂死
+# （IPv6/链路问题，无 --timeout 时永不返回），所以两者都带超时。
+_download_script_get() {
+    local url="$1" out="$2"
+    if wget -q --timeout=15 --tries=2 -O "$out" "$url" 2>/dev/null && [ -s "$out" ]; then
+        return 0
+    fi
+    rm -f "$out"
+    command -v curl >/dev/null 2>&1 || return 1
+    curl -fsSL --max-time 120 --retry 2 -o "$out" "$url" 2>/dev/null && [ -s "$out" ]
+}
+
 _download_bash_script_atomic() {
     local url="$1" target="$2" label="${3:-脚本}"
     [[ "$url" == https://* ]] || { _error "拒绝从非 HTTPS 地址下载 ${label}。"; return 1; }
     mkdir -p "$(dirname "$target")" || return 1
     local tmp
     tmp=$(mktemp "$(dirname "$target")/.${label}.new.XXXXXX") || return 1
-    if ! wget -qO "$tmp" "$url" || [ ! -s "$tmp" ]; then
+    if ! _download_script_get "$url" "$tmp"; then
         rm -f "$tmp"
         _error "${label} 下载失败或内容为空。"
         return 1
@@ -8263,13 +8369,14 @@ _main_menu() {
         # 网络优化
         echo -e "  ${CYAN}【网络优化】${NC}"
         echo -e "    ${GREEN}[20]${NC} 网络加速 (BBR / TCP 调优)"
+        echo -e "    ${GREEN}[21]${NC} 一键测速"
         echo ""
         
         echo -e "  ─────────────────────────────────────────────────"
         echo -e "    ${YELLOW}[0]${NC} 退出脚本"
         echo ""
         
-        read -p "  请输入选项 [0-20]: " choice
+        read -p "  请输入选项 [0-21]: " choice
  
         case $choice in
             1) _require_singbox && _show_add_node_menu ;;
@@ -8292,6 +8399,7 @@ _main_menu() {
             18) _advanced_features ;;
             19) _xray_features ;;
             20) _net_tune_menu ;;
+            21) _speedtest_menu ;;
             0) exit 0 ;;
             *) _error "无效输入，请重试。" ;;
         esac
