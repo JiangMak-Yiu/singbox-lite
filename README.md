@@ -48,7 +48,7 @@
 ## 安装与启动
 
 ```bash
-(command -v bash >/dev/null 2>&1 || apk add --no-cache bash >/dev/null 2>&1 || apt-get install -y bash >/dev/null 2>&1 || true)
+(command -v bash >/dev/null 2>&1 || apk add --no-cache bash >/dev/null 2>&1 || apt-get install -y bash >/dev/null 2>&1 || opkg install bash >/dev/null 2>&1 || true)
 (curl -LfsS https://raw.githubusercontent.com/JiangMak-Yiu/singbox-lite/main/singbox.sh -o /usr/local/bin/sb || wget -q --timeout=15 https://raw.githubusercontent.com/JiangMak-Yiu/singbox-lite/main/singbox.sh -O /usr/local/bin/sb) && chmod +x /usr/local/bin/sb && bash /usr/local/bin/sb
 ```
 
