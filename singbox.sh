@@ -6,7 +6,8 @@ export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin${PATH:
 umask 077
 
 # 基础路径定义
-export SCRIPT_VERSION="30"
+# ponytail: 31 = 本 fork 自己的版本号（上游停在 30），只为在菜单横幅上区分"跑的是不是二改版"
+export SCRIPT_VERSION="31"
 export DEFAULT_SNI="www.analog.com"
 export WS_EARLY_DATA_SIZE="2560"
 export WS_EARLY_DATA_HEADER="Sec-WebSocket-Protocol"
