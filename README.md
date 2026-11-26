@@ -48,8 +48,11 @@
 ## 安装与启动
 
 ```bash
-(curl -LfsS https://raw.githubusercontent.com/JiangMak-Yiu/singbox-lite/main/singbox.sh -o /usr/local/bin/sb || wget -q https://raw.githubusercontent.com/JiangMak-Yiu/singbox-lite/main/singbox.sh -O /usr/local/bin/sb) && chmod +x /usr/local/bin/sb && sb
+(command -v bash >/dev/null 2>&1 || apk add --no-cache bash >/dev/null 2>&1 || apt-get install -y bash >/dev/null 2>&1 || true)
+(curl -LfsS https://raw.githubusercontent.com/JiangMak-Yiu/singbox-lite/main/singbox.sh -o /usr/local/bin/sb || wget -q --timeout=15 https://raw.githubusercontent.com/JiangMak-Yiu/singbox-lite/main/singbox.sh -O /usr/local/bin/sb) && chmod +x /usr/local/bin/sb && bash /usr/local/bin/sb
 ```
+
+脚本首行是 `#!/bin/bash`。Alpine、OpenWrt 默认**不带 bash**，内核找不到解释器时 BusyBox 只会报一句 `sb: not found`（它不区分「命令不存在」和「解释器缺失」），看起来像没装上，其实文件好好的——所以第一行先补 bash。装完没有 bash 的机器请用 `bash /usr/local/bin/sb` 启动，或 `apk add --no-cache bash` / `opkg install bash` 后再 `sb`。
 
 以后直接运行：
 
