@@ -6140,7 +6140,7 @@ _net_tune_menu() {
         echo -e "  ${GREEN}[4]${NC} 刷新状态"
         echo -e "  ${YELLOW}[0]${NC} 返回主菜单"
         echo ""
-        read -r -p "  请选择 [0-4]: " choice
+        if ! read -r -p "  请选择 [0-4]: " choice; then return 0; fi
         case "$choice" in
             1) _net_tune_bbr ;;
             2) _net_tune_extra ;;
@@ -6235,7 +6235,7 @@ _speedtest_menu() {
         echo -e "  ${GREEN}[3]${NC} 清理测速临时文件"
         echo -e "  ${YELLOW}[0]${NC} 返回主菜单"
         echo ""
-        read -r -p "  请选择 [0-3]: " choice
+        if ! read -r -p "  请选择 [0-3]: " choice; then return 0; fi
         case "$choice" in
             1) _speedtest_run ;;
             2) _speedtest_update ;;
@@ -8377,7 +8377,13 @@ _main_menu() {
         echo -e "    ${YELLOW}[0]${NC} 退出脚本"
         echo ""
         
-        read -p "  请输入选项 [0-21]: " choice
+        # ponytail: stdin 关闭时（cron/WebUI/`sb < /dev/null`）read 返回非 0，
+        # 不拦就会无限重画菜单把日志刷到几百 MB，实测 8 秒 1.28MB。
+        if ! read -p "  请输入选项 [0-21]: " choice; then
+            echo
+            _warn "输入流已关闭（非交互运行），退出脚本。"
+            exit 0
+        fi
  
         case $choice in
             1) _require_singbox && _show_add_node_menu ;;
